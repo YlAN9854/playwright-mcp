@@ -18,6 +18,9 @@
 const { program } = require('playwright-core/lib/utilsBundle');
 const { decorateMCPCommand } = require('playwright/lib/mcp/program');
 
+// Import index to ensure tools are patched
+require('./index');
+
 const packageJSON = require('./package.json');
 const p = program.version('Version ' + packageJSON.version).name('Playwright MCP');
 decorateMCPCommand(p, packageJSON.version)
