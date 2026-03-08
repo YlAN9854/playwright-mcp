@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "playwright-echarts": {
+      "command": "node",
+      "args": [
+        "D:/STUDY/Web/MCPs/playwright-mcp/packages/playwright-mcp/cli.js",
+        "--headless=false"
+      ],
+      "env": {
+        "PLAYWRIGHT_MCP_ShowBrowser": "true" 
+      }
+    }
+  }
+}
