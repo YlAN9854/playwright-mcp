@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Copyright (c) Microsoft Corporation.
  *
@@ -16,4 +15,11 @@
  */
 
 const { createConnection } = require('playwright/lib/mcp/index');
+const { browserTools } = require('playwright/lib/mcp/browser/tools');
+const echartsTools = require('./echarts');
+
+// Inject ECharts tools into the global tool registry used by Playwright MCP
+// This works because require() caches the module, so modifying the exported array affects all consumers
+browserTools.push(...echartsTools);
+
 module.exports = { createConnection };
