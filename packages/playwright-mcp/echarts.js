@@ -142,6 +142,7 @@ const ECHARTS_HELPERS = `
              chartTypes: [...new Set(option.series?.map(s => s.type) || [])],
              series: option.series?.map(s => ({ name: s.name, type: s.type, dataCount: s.data?.length })) || [],
              legends: option.legend?.flatMap(l => l.data || []) || [],
+             radarIndicators: option.radar?.flatMap(r => (r.indicator || []).map(ind => ind.name)) || [],
              hasDataZoom: (option.dataZoom?.length || 0) > 0,
              title: option.title?.[0]?.text || null,
            };
@@ -175,7 +176,141 @@ const ECHARTS_HELPERS = `
     triggerEvent(selector, eventType, params) {
       const instance = this.getInstance(selector);
       if (!instance) throw new Error('ECharts instance not found for selector: ' + selector);
-      instance.trigger(eventType, params);
+
+      const option = instance.getOption();
+      const enrichedParams = Object.assign({}, params);
+
+      // Auto-enrich params for radar components
+      if (params.componentType === 'radar' && params.name != null) {
+        const radarOpt = option.radar;
+        if (radarOpt && radarOpt.length > 0) {
+          const radar = radarOpt[0];
+          const indicators = radar.indicator;
+          if (indicators) {
+            const idx = indicators.findIndex(function(ind) { return ind.name === params.name; });
+            if (idx !== -1 && enrichedParams.dataIndex == null) {
+              enrichedParams.dataIndex = idx;
+            }
+          }
+        }
+        if (enrichedParams.componentIndex == null) {
+          enrichedParams.componentIndex = 0;
+        }
+      }
+
+      // Auto-enrich series info
+      if (option.series && option.series.length > 0) {
+        const si = enrichedParams.seriesIndex != null ? enrichedParams.seriesIndex : 0;
+        const s = option.series[si];
+        if (s) {
+          if (enrichedParams.seriesIndex == null) enrichedParams.seriesIndex = si;
+          if (!enrichedParams.seriesName) enrichedParams.seriesName = s.name;
+          if (!enrichedParams.seriesType) enrichedParams.seriesType = s.type;
+        }
+      }
+
+      // Approach 1: Simulate real canvas mouse events for maximum compatibility
+      // This goes through ZRender's full event pipeline (hit-testing, dispatching, etc.)
+      let simulated = false;
+      try {
+        simulated = this.simulateCanvasClick(instance, selector, params);
+      } catch (e) { /* fallback to trigger below */ }
+
+      // Approach 2: Directly trigger event handlers registered via instance.on()
+      if (!enrichedParams.event) {
+        enrichedParams.event = { target: {} };
+      }
+      instance.trigger(eventType, enrichedParams);
+
+      return { simulated: simulated };
+    },
+
+    /**
+     * Simulate a real mouse click on the canvas at the calculated position of
+     * the target element (e.g., radar indicator label). This goes through
+     * ZRender's full event pipeline for maximum compatibility.
+     */
+    simulateCanvasClick(instance, selector, params) {
+      if (params.componentType !== 'radar' || params.name == null) return false;
+
+      const option = instance.getOption();
+      const radarOpt = option.radar;
+      if (!radarOpt || radarOpt.length === 0) return false;
+      const radar = radarOpt[0];
+      const indicators = radar.indicator;
+      if (!indicators) return false;
+
+      const idx = indicators.findIndex(function(ind) { return ind.name === params.name; });
+      if (idx === -1) return false;
+
+      const width = instance.getWidth();
+      const height = instance.getHeight();
+
+      function parsePct(v, total) {
+        if (typeof v === 'number') return v;
+        if (typeof v === 'string' && v.endsWith('%')) return parseFloat(v) / 100 * total;
+        return parseFloat(v) || 0;
+      }
+
+      const centerArr = radar.center || ['50%', '50%'];
+      const cx = parsePct(centerArr[0], width);
+      const cy = parsePct(centerArr[1], height);
+
+      let r;
+      const radiusOpt = radar.radius;
+      if (radiusOpt != null) {
+        if (Array.isArray(radiusOpt)) {
+          r = parsePct(radiusOpt[radiusOpt.length - 1], Math.min(width, height) / 2);
+        } else {
+          r = parsePct(radiusOpt, Math.min(width, height) / 2);
+        }
+      } else {
+        r = Math.min(width, height) / 2 * 0.75;
+      }
+
+      const n = indicators.length;
+      const startAngleDeg = radar.startAngle != null ? radar.startAngle : 90;
+      const startAngle = startAngleDeg * Math.PI / 180;
+      const angle = startAngle - (2 * Math.PI / n) * idx;
+
+      const nameGap = radar.nameGap != null ? radar.nameGap : 15;
+      const labelR = r + nameGap;
+
+      const x = cx + labelR * Math.cos(angle);
+      const y = cy - labelR * Math.sin(angle);
+
+      // Find canvas element
+      let container;
+      if (typeof selector === 'string') {
+        container = document.querySelector(selector);
+      } else {
+        container = selector;
+      }
+      if (!container) return false;
+
+      let canvas;
+      if (container.tagName === 'CANVAS') {
+        canvas = container;
+      } else {
+        canvas = container.querySelector('canvas[data-zr-dom-id]') || container.querySelector('canvas');
+      }
+      if (!canvas) return false;
+
+      // Dispatch real mouse events at the calculated position
+      const rect = canvas.getBoundingClientRect();
+      const evtTypes = ['mousemove', 'mousedown', 'mouseup', 'click'];
+      for (let i = 0; i < evtTypes.length; i++) {
+        const evt = new MouseEvent(evtTypes[i], {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + x,
+          clientY: rect.top + y,
+          view: window
+        });
+        canvas.dispatchEvent(evt);
+      }
+
+      return true;
     },
 
     getData(selector, seriesIndex, seriesName) {
@@ -295,13 +430,15 @@ const echartsTriggerEvent = defineTabTool({
   handle: async (tab, params, response) => {
     await ensureHelpers(tab.page);
     try {
-      await tab.page.evaluate(({ selector, eventType, ...rest }) => {
-        const eventParams = { ...rest, event: { target: {} } };
-         // Remove undefined keys
-        Object.keys(eventParams).forEach(key => eventParams[key] === undefined && delete eventParams[key]);
-        window.__playwright_echarts.triggerEvent(selector, eventType, eventParams);
+      const result = await tab.page.evaluate(({ selector, eventType, ...rest }) => {
+        // Remove undefined keys from params
+        Object.keys(rest).forEach(key => rest[key] === undefined && delete rest[key]);
+        return window.__playwright_echarts.triggerEvent(selector, eventType, rest);
       }, params);
-      response.addTextResult('Event triggered successfully');
+      const detail = result?.simulated
+        ? 'Event triggered successfully (canvas click simulated + event emitted)'
+        : 'Event triggered successfully (event emitted)';
+      response.addTextResult(detail);
     } catch (e) {
       response.addError(e.message);
     }

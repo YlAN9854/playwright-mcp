@@ -3,8 +3,7 @@
     "playwright-echarts": {
       "command": "node",
       "args": [
-        "D:/STUDY/Web/MCPs/playwright-mcp/packages/playwright-mcp/cli.js",
-        "--headless=false"
+        "D:/STUDY/Web/MCPs/playwright-mcp/packages/playwright-mcp/cli.js"
       ],
       "env": {
         "PLAYWRIGHT_MCP_ShowBrowser": "true" 
